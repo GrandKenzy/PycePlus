@@ -13,8 +13,10 @@ class Application:
     connection_lost = False
     FPS: int = 60
     REFRESH: bool = True
-    
+    root = ''
     
 def exit():
     pygame.quit()
     sys.exit()
+    
+    

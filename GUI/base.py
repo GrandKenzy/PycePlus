@@ -1,238 +1,374 @@
+"""
+PycePlus.GUI.base
+Extensible base widget class with:
+  • dirty-flag rendering (only redraw if changed)
+  • CSS-style `style` dict support
+  • Full event map (mouse, keyboard, focus, drag/drop, lifecycle)
+  • Thread-safe dirty propagation via RLock
+"""
 from __future__ import annotations
-from typing import Callable, Literal, TYPE_CHECKING
+
+import threading
+from typing import Callable, Any, Literal, TYPE_CHECKING
+
 if TYPE_CHECKING:
     from PycePlus.GUI.frame import Frame
 
 import pygame
 
 from PycePlus.UI.window import Window
-from PycePlus.UI.tools.color import Color
+from PycePlus.UI.tools.color import Color, colorType
 from PycePlus.UI import Application
 from PycePlus.GUI.interface_man import Tree
+from PycePlus.GUI.interface_man.style import compile_style, CompiledStyle
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Event identifier literals
+# ──────────────────────────────────────────────────────────────────────────────
 
 wEvents = Literal[
-    'mouse.button.left.click', 'mouse.button.left.release', 'mouse.button.left.repeat',
-    'mouse.button.middle.click', 'mouse.button.middle.release', 'mouse.button.middle.repeat',
-    'mouse.button.right.click', 'mouse.button.right.release', 'mouse.button.right.repeat',
-    'mouse.hover', 'mouse.leave', 'mouse.hovering'
+    "mouse.button.left.click",   "mouse.button.left.release",   "mouse.button.left.repeat",
+    "mouse.button.middle.click", "mouse.button.middle.release", "mouse.button.middle.repeat",
+    "mouse.button.right.click",  "mouse.button.right.release",  "mouse.button.right.repeat",
+    "mouse.hover", "mouse.leave", "mouse.hovering",
+    "mouse.button.left.double-click",
+    "mouse.button.right.double-click",
+    "mouse.button.middle.double-click",
+    "mouse.scroll.up", "mouse.scroll.down",
+    "mouse.drag.start", "mouse.drag.move", "mouse.drag.end",
+    "key.down", "key.up", "key.repeat",
+    "focus.gain", "focus.lose",
+    "drop.file", "drop.text",
+    "widget.create", "widget.delete", "widget.update",
+    "widget.resize", "widget.move",
+    "value.change",
 ]
 
-wEvents_Map = {
-    'mouse.button.left.click': 0,
-    'mouse.button.left.release': 1,
-    'mouse.button.left.repeat': 2,
-
-    'mouse.button.middle.click': 3,
-    'mouse.button.middle.release': 4,
-    'mouse.button.middle.repeat': 5,
-
-    'mouse.button.right.click': 6,
-    'mouse.button.right.release': 7,
-    'mouse.button.right.repeat': 8,
-
-    'mouse.hover': 9,
-    'mouse.leave': 10,
-    'mouse.hovering': 11
+wEvents_Map: dict[str, int] = {
+    "mouse.button.left.click":           0,
+    "mouse.button.left.release":         1,
+    "mouse.button.left.repeat":          2,
+    "mouse.button.middle.click":         3,
+    "mouse.button.middle.release":       4,
+    "mouse.button.middle.repeat":        5,
+    "mouse.button.right.click":          6,
+    "mouse.button.right.release":        7,
+    "mouse.button.right.repeat":         8,
+    "mouse.hover":                       9,
+    "mouse.leave":                       10,
+    "mouse.hovering":                    11,
+    "mouse.button.left.double-click":    12,
+    "mouse.button.right.double-click":   13,
+    "mouse.button.middle.double-click":  14,
+    "mouse.scroll.up":                   15,
+    "mouse.scroll.down":                 16,
+    "mouse.drag.start":                  17,
+    "mouse.drag.move":                   18,
+    "mouse.drag.end":                    19,
+    "key.down":                          20,
+    "key.up":                            21,
+    "key.repeat":                        22,
+    "focus.gain":                        23,
+    "focus.lose":                        24,
+    "drop.file":                         25,
+    "drop.text":                         26,
+    "widget.create":                     27,
+    "widget.delete":                     28,
+    "widget.update":                     29,
+    "widget.resize":                     30,
+    "widget.move":                       31,
+    "value.change":                      32,
 }
 
-Cursors = Literal[ # cursores de pygame soporta, del 0 al 11
-    'arrow', 'ibeam', 'wait', 'crosshair', 'waitarrow', 'sizenwse', 'sizenesw', 'sizewe', 'sizens', 'sizeall', 'no', 'hand'
-]
+_ROM_SIZE = len(wEvents_Map)
 
+Cursors = Literal[
+    "arrow","ibeam","wait","crosshair","waitarrow",
+    "sizenwse","sizenesw","sizewe","sizens","sizeall","no","hand",
+]
 Cursors_Map = {
-    'arrow': 0,
-    'ibeam': 1,
-    'wait': 2,
-    'crosshair': 3,
-    'waitarrow': 4,
-    'sizenwse': 5,
-    'sizenesw': 6,
-    'sizewe': 7,
-    'sizens': 8,
-    'sizeall': 9,
-    'no': 10,
-    'hand': 11
+    "arrow": 0, "ibeam": 1, "wait": 2, "crosshair": 3,
+    "waitarrow": 4, "sizenwse": 5, "sizenesw": 6, "sizewe": 7,
+    "sizens": 8, "sizeall": 9, "no": 10, "hand": 11,
 }
-
 
 
 class Padding:
-    def __init__(self, left: int, right: int, top: int, bottom: int):
-        self.left = left
-        self.right = right
-        self.top = top
-        self.bottom = bottom
-        
+    __slots__ = ("left", "right", "top", "bottom")
+
+    def __init__(self, left=0, right=0, top=0, bottom=0):
+        self.left   = left;  self.right  = right
+        self.top    = top;   self.bottom = bottom
+
     @property
     def all(self):
         return self.left, self.right, self.top, self.bottom
-    
-    def set_pad(self, left: int | None = None, right: int | None = None, top: int | None = None, bottom: int | None = None):
-        self.left = left or self.left
-        self.right = right or self.right
-        self.top = top or self.top
-        self.bottom = bottom or self.bottom
+
+    def set_pad(self, left=None, right=None, top=None, bottom=None):
+        if left   is not None: self.left   = left
+        if right  is not None: self.right  = right
+        if top    is not None: self.top    = top
+        if bottom is not None: self.bottom = bottom
 
 
 class Outline:
-    def __init__(self, width: int, color: Color, border_radius: int, border_top_left_radius: int = 0, border_top_right_radius: int = 0, border_bottom_right_radius: int = 0, border_bottom_left_radius: int = 0, sides: tuple[int, int, int, int] = (1, 1, 1, 1)):
-        self.width = width
-        self.color = color
-        self.border_radius = border_radius
-        self.border_top_left_radius = border_top_left_radius
-        self.border_top_right_radius = border_top_right_radius
-        self.border_bottom_right_radius = border_bottom_right_radius
+    def __init__(self, width=0, color=None, border_radius=0,
+                 border_top_left_radius=0, border_top_right_radius=0,
+                 border_bottom_right_radius=0, border_bottom_left_radius=0,
+                 sides=(1, 1, 1, 1)):
+        self.width                     = width
+        self.color                     = color or Color(0, 0, 0)
+        self.border_radius             = border_radius
+        self.border_top_left_radius    = border_top_left_radius
+        self.border_top_right_radius   = border_top_right_radius
+        self.border_bottom_right_radius= border_bottom_right_radius
         self.border_bottom_left_radius = border_bottom_left_radius
-        self.sides = sides
-        self.gradient_colors: list[Color] = []
-        self.type: Literal['normal', 'double', 'gradient'] = 'normal'
-        self.gradient_type: Literal['horizontal', 'vertical'] = 'horizontal'
+        self.sides                     = sides
+        self.gradient_colors: list     = []
+        self.type: str                 = "normal"
+        self.gradient_type: str        = "horizontal"
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Base
+# ──────────────────────────────────────────────────────────────────────────────
 
 class Base:
-    def __init__(self, father: 'Frame | None | Window' , name: str | None, page: str | None):
-        
+    """
+    Root of every PycePlus widget.
+
+    Constructor kwargs
+    ------------------
+    father  : Frame | Window | None
+    name    : str | None
+    page    : str | None
+    style   : dict | None   CSS-like style dictionary
+    """
+
+    def __init__(
+        self,
+        father: "Frame | None | Window",
+        name:   str | None,
+        page:   str | None,
+        style:  dict | None = None,
+    ):
+        self._lock = threading.RLock()
+
         self.father = father or Window
-        self.name = name or f'{self.__class__.__name__}-{id(self)}'
-        self.page = page or Tree.current_page()
+        self.name   = name or f"{self.__class__.__name__}-{id(self)}"
+        self.page   = page or Tree.current_page()
 
-        # coords
-        self.rect: pygame.Rect = pygame.Rect(0, 0, 0, 0)
-        self.padding = Padding(0, 0, 0, 0)
-        self.outline = Outline(0, Color(0, 0, 0), 0)
-        
-        
-        # gui
-        self.texture: pygame.Surface = None
-        self.background_color: Color = Color(0, 0, 0)
-        self.color = Color(0, 0, 0)
-        self.default_color = Color(0, 0, 0)
-        self.cursor = 0
-        self.visible = True
-    
-        # flags
-        self.is_focus = False
-        self.is_hover = False
-        
-        # private
-        self._mask: pygame.Mask = None
-        self._original_surface: pygame.Surface = None
-        self._ROM: dict[int, Callable[..., None] | None] = {
-            0: None, # mouse-left-click
-            1: None, # mouse-left-release
-            2: None, # mouse-left-repeat
+        # geometry
+        self.rect    = pygame.Rect(0, 0, 0, 0)
+        self.padding = Padding()
+        self.outline = Outline()
 
-            3: None, # mouse-middle-click
-            4: None, # mouse-middle-release
-            5: None, # mouse-middle-repeat
+        # rendering
+        self.texture:          pygame.Surface | None = None
+        self.background_color: Color = Color(30, 30, 30)
+        self.color:            Color = Color(220, 220, 220)
+        self.default_color:    Color = Color(220, 220, 220)
+        self.cursor:           int   = 0
+        self.visible:          bool  = True
 
-            6: None, # mouse-right-click
-            7: None, # mouse-right-release
-            8: None, # mouse-right-repeat
-            
-            9: None, # mouse-hover
-            10: None, # mouse-leave
-            11: None, # mouse-hovering
-            
-        }
-        self._bflags = [0, 0, 0]
-        
-        if isinstance(self.father, Window):
+        # style
+        self._style_raw: dict       = style or {}
+        self._style: CompiledStyle  = compile_style(self._style_raw)
+        self._apply_style()
+
+        # state
+        self.is_focus:  bool = False
+        self.is_hover:  bool = False
+        self._dirty:    bool = True
+
+        # drag
+        self._dragging:    bool = False
+        self._drag_origin: tuple[int, int] = (0, 0)
+
+        # event callbacks
+        self._ROM: dict[int, Callable | None] = {i: None for i in range(_ROM_SIZE)}
+
+        # double-click / button flags
+        self._timers = [0.0, 0.0, 0.0]
+        self._bflags = [0,   0,   0]
+
+        # register
+        if self._is_root_father():
             Tree.put(self)
         else:
             self.father.put(self)
-    
-    def bind(self, event: int | wEvents, callback: Callable[..., None] | None):
-        if isinstance(event, int):
-            self._ROM[event] = callback
-        else:
-            self._ROM[wEvents_Map[event]] = callback   
-        return self
-        
-    def get_size(self):
-        return self.rect.width, self.rect.height
-    
-    @property
-    def width(self):
-        return self.rect.width
-    
-    @property
-    def height(self):
-        return self.rect.height
-    
-    
-    # relative
-    @property
-    def x(self):
-        return self.rect.x
-    
-    @property
-    def y(self):
-        return self.rect.y
-    
-    @property
-    def right(self):
-        return self.rect.right
-    
-    @property
-    def bottom(self):
-        return self.rect.bottom
-    
-    @property
-    def center(self):
-        return self.rect.center
-    
-    @property
-    def centerx(self):
-        return self.rect.centerx
-    
-    @property
-    def centery(self):
-        return self.rect.centery
-    
-    # absolute
-    @property
-    def abs_x(self):
-        return self.rect.x + self.father.abs_x
-    
-    @property
-    def abs_y(self):
-        return self.rect.y + self.father.abs_y
-    
-    @property
-    def abs_right(self):
-        return self.rect.right + self.father.abs_x
-    
-    @property
-    def abs_bottom(self):
-        return self.rect.bottom + self.father.abs_y
-    
-    @property
-    def abs_center(self):
-        return self.rect.center + self.father.abs_pos
-     
-    @property
-    def abs_centerx(self):
-        return self.rect.centerx + self.father.abs_x
-    
-    @property
-    def abs_centery(self):
-        return self.rect.centery + self.father.abs_y
-    
-    @property
-    def abs_pos(self):
-        return self.rect.topleft
 
-    
-    def is_father_widget(self):
-        return isinstance(self.father, Base)
-    
-    def update(self):
+        self._fire(27)   # widget.create
+
+    # ── internal helpers ─────────────────────────────────────────────────────
+
+    def _is_root_father(self) -> bool:
+        return self.father is Window or isinstance(self.father, type(Window))
+
+    # ── style ─────────────────────────────────────────────────────────────────
+
+    def _apply_style(self) -> None:
+        s = self._style
+        self.background_color.update(s.background_color)
+        self.color.update(s.color)
+        self.padding.set_pad(s.pad_left, s.pad_right, s.pad_top, s.pad_bottom)
+        self.outline.width                     = s.border
+        self.outline.color                     = s.border_color
+        self.outline.border_radius             = s.border_radius
+        self.outline.border_top_left_radius    = s.border_top_left_radius
+        self.outline.border_top_right_radius   = s.border_top_right_radius
+        self.outline.border_bottom_left_radius = s.border_bottom_left_radius
+        self.outline.border_bottom_right_radius= s.border_bottom_right_radius
+        self.cursor = Cursors_Map.get(s.cursor, 0)
+
+    def set_style(self, style: dict) -> "Base":
+        with self._lock:
+            self._style_raw = style
+            self._style     = compile_style(style)
+            self._apply_style()
+            self.mark_dirty()
+        return self
+
+    def update_style(self, **kwargs) -> "Base":
+        return self.set_style({**self._style_raw, **kwargs})
+
+    @property
+    def style(self) -> CompiledStyle:
+        return self._style
+
+    # ── dirty ─────────────────────────────────────────────────────────────────
+
+    def mark_dirty(self) -> None:
+        with self._lock:
+            self._dirty = True
         Application.REFRESH = True
-        
-    def unlink(self):
+        if self.is_father_widget() and hasattr(self.father, "mark_dirty"):
+            self.father.mark_dirty()
+
+    def clear_dirty(self) -> None:
+        with self._lock:
+            self._dirty = False
+
+    @property
+    def is_dirty(self) -> bool:
+        return self._dirty
+
+    # ── event binding ─────────────────────────────────────────────────────────
+
+    def bind(self, event: int | wEvents, callback: Callable | None) -> "Base":
+        eid = event if isinstance(event, int) else wEvents_Map[event]
+        self._ROM[eid] = callback
+        return self
+
+    def unbind(self, event: int | wEvents) -> "Base":
+        eid = event if isinstance(event, int) else wEvents_Map[event]
+        self._ROM[eid] = None
+        return self
+
+    def _fire(self, event_id: int, *args) -> None:
+        cb = self._ROM.get(event_id)
+        if cb:
+            try:
+                cb(self, *args)
+            except Exception:
+                import traceback; traceback.print_exc()
+
+    # ── geometry ──────────────────────────────────────────────────────────────
+
+    def get_size(self) -> tuple[int, int]:
+        return self.rect.width, self.rect.height
+
+    @property
+    def width(self)   -> int: return self.rect.width
+    @property
+    def height(self)  -> int: return self.rect.height
+    @property
+    def x(self)       -> int: return self.rect.x
+    @property
+    def y(self)       -> int: return self.rect.y
+    @property
+    def right(self)   -> int: return self.rect.right
+    @property
+    def bottom(self)  -> int: return self.rect.bottom
+    @property
+    def center(self)          -> tuple[int,int]: return self.rect.center
+    @property
+    def centerx(self) -> int: return self.rect.centerx
+    @property
+    def centery(self) -> int: return self.rect.centery
+
+    @property
+    def abs_x(self)      -> int:
+        return self.rect.x + (self.father.abs_x if self.is_father_widget() else 0)
+    @property
+    def abs_y(self)      -> int:
+        return self.rect.y + (self.father.abs_y if self.is_father_widget() else 0)
+    @property
+    def abs_right(self)  -> int:
+        return self.rect.right  + (self.father.abs_x if self.is_father_widget() else 0)
+    @property
+    def abs_bottom(self) -> int:
+        return self.rect.bottom + (self.father.abs_y if self.is_father_widget() else 0)
+    @property
+    def abs_pos(self)    -> tuple[int,int]:
+        return (self.abs_x, self.abs_y)
+
+    def move_to(self, x: int, y: int) -> "Base":
+        self.rect.x = x
+        self.rect.y = y
+        self._fire(31)
+        self.mark_dirty()
+        return self
+
+    def resize_to(self, w: int, h: int) -> "Base":
+        self.rect.width  = w
+        self.rect.height = h
+        if self.texture and (self.texture.get_width() != w or
+                             self.texture.get_height() != h):
+            self.texture = pygame.Surface((w, h), pygame.SRCALPHA)
+        self._fire(30)
+        self.mark_dirty()
+        return self
+
+    # ── hierarchy ─────────────────────────────────────────────────────────────
+
+    def is_father_widget(self) -> bool:
+        return (
+            self.father is not Window
+            and not isinstance(self.father, type)
+            and hasattr(self.father, "put")
+        )
+
+    def unlink(self) -> None:
         if self.is_father_widget():
             self.father.unparent(self)
             self.father = Window
-            
+
+    def destroy(self) -> None:
+        self._fire(28)
+        self.unlink()
+        Tree.remove(self)
+        if self.texture:
+            self.texture = None
+
     def is_container(self) -> bool:
         return False
+
+    def get_childrens(self) -> list:
+        return []
+
+    def update(self) -> None:
+        self.mark_dirty()
+
+    # ── render ────────────────────────────────────────────────────────────────
+
+    def render_self(self) -> None:
+        """Subclasses override this to draw into self.texture."""
+        if self.texture is None:
+            return
+        self.style.fill_surface(self.texture)
+        self.style.draw_border(self.texture)
+        self.clear_dirty()
+
+    def __repr__(self) -> str:
+        return f"<{self.__class__.__name__} name={self.name!r} rect={self.rect}>"

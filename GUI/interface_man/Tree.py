@@ -1,82 +1,93 @@
+"""
+PycePlus.GUI.interface_man.Tree
+Thread-safe widget tree with page routing.
+"""
 from __future__ import annotations
+
+import threading
 from typing import TYPE_CHECKING
+
 if TYPE_CHECKING:
-    from PycePlus.UI.window import Window
     from PycePlus.GUI.base import Base
 
+_lock   = threading.RLock()
+widgets: list["Base"] = []
+Page    = "__main__"
+Pages:  list[str] = ["__main__"]
 
-widgets: list[Base] = []
-Page: str = '__main__'
-Pages: list[str] = []
 
-
-def current_page():
-    global Page
+def current_page() -> str:
     return Page
 
-def set_page(page: str):
-    global Pages, Page
-    Page = page
-    if not page in Pages:
-        Pages.append(page)
-        
+
+def set_page(page: str) -> None:
+    global Page
+    with _lock:
+        Page = page
+        if page not in Pages:
+            Pages.append(page)
+
+
 def page_exists(page: str) -> bool:
-    global Pages
     return page in Pages
 
-def next_page(page: str):
-    global Pages
-    index = Pages.index(page)
-    if index + 1 < len(Pages):
-        return set_page(Pages[index + 1])
-    else:
-        return set_page(Pages[0])
-    
-    
-def previous_page(page: str):
-    global Pages
-    index = Pages.index(page)
-    if index - 1 >= 0:
-        return set_page(Pages[index - 1])
-    else:
-        return set_page(Pages[-1])
 
-def get_pages():
-    global Pages
-    return Pages
+def next_page() -> None:
+    with _lock:
+        idx = Pages.index(Page)
+        set_page(Pages[(idx + 1) % len(Pages)])
 
 
-# tree widgets management
-def put(widget: Base):
-    global widgets
-    if widget.is_father_widget(): raise ValueError("Widget already has a father widget") 
-    widgets.append(widget)
-    
-def nav(root: str):
-    global widgets
-    
-    parts = root.split('/')
-    
-    first_part = parts[0]
-    parts = parts[1:]
-    
-    def recursive_search(childrens: list[Base], first_part: str, parts: list[str]) -> 'Base | None':
-        for child in childrens:
-            if child.name == first_part:
-                if parts and not child.is_container():
-                    raise Exception(f'{child.name} is not a container')
-                    
-                return recursive_search(child.get_childrens(), parts[0], parts[1:])
-        return None
-    
-    for widget in widgets:
-        if widget.name == first_part:    
-            if parts and not widget.is_container():
-                raise Exception(f'{widget.name} is not a container')
-            return recursive_search(widget.get_childrens(), parts[0], parts[1:])
-        
-    return None
+def previous_page() -> None:
+    with _lock:
+        idx = Pages.index(Page)
+        set_page(Pages[(idx - 1) % len(Pages)])
 
-    
-    
-    
+
+def get_pages() -> list[str]:
+    return list(Pages)
+
+
+def put(widget: "Base") -> None:
+    """Register a root-level widget."""
+    with _lock:
+        if widget not in widgets:
+            widgets.append(widget)
+
+
+def remove(widget: "Base") -> None:
+    """Remove a widget from the tree entirely."""
+    with _lock:
+        if widget in widgets:
+            widgets.remove(widget)
+
+
+def nav(root: str) -> "Base | None":
+    """Navigate the widget tree by slash-delimited path. E.g. 'frame/button'."""
+    with _lock:
+        parts = root.split("/")
+        pool  = list(widgets)
+
+        for part in parts:
+            found = None
+            for w in pool:
+                if w.name == part:
+                    found = w
+                    pool  = w.get_childrens() if w.is_container() else []
+                    break
+            if found is None:
+                return None
+        return found
+
+
+def get_all_flat() -> list["Base"]:
+    """Return every widget in the tree (depth-first) as a flat list."""
+    result: list["Base"] = []
+    with _lock:
+        stack = list(widgets)
+    while stack:
+        w = stack.pop()
+        result.append(w)
+        if w.is_container():
+            stack.extend(w.get_childrens())
+    return result

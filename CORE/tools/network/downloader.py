@@ -10,8 +10,8 @@ from PycePlus.CORE.timec import Time
 from PycePlus.CORE.tools import asynchronous
 
 _id_counter = itertools.count(1)
-download_register = {}
-_download_controls = {}
+download_register: dict[int, 'DData'] = {}
+_download_controls: dict[int, 'DControl'] = {}
 
 BUFFER_SIZE = 1024 * 1024
 
@@ -25,7 +25,7 @@ class DData:
         self.size = size
 
 class DControl:
-    def __init__(self, id):
+    def __init__(self, id: int):
         self.id = id
         self._pause_manual = threading.Event()
         self._pause_manual.set()
@@ -60,7 +60,7 @@ class DControl:
         if self.thread:
             self.thread.join()
 
-    def get(self, wait=False):
+    def get(self, wait: bool=False):
         if wait:
             self.wait()
         return download_register.get(self.id)
