@@ -117,7 +117,7 @@ def exam() -> None:
     SCROLL_Y        = 0
 
     keys_pressed_raw = _get_pressed()
-    keyboard_is_active = any(keys_pressed_raw)
+    keyboard_is_active = keys_pressed_raw.count(True) != 0
 
     # ── repeating actions ────────────────────────────────────────────────────
     for k, (_, _, on_repeat, flag) in KEYS_EVENT_REGISTER.items():

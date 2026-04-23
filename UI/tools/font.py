@@ -1,435 +1,132 @@
-from pathlib import Path
-from io import BytesIO
-from zipfile import ZipFile, is_zipfile
+from __future__ import annotations
 
-from fontTools.ttLib import TTFont
+from pathlib import Path
+from typing import Any
 
 import pygame
-import pygame.freetype
-import sys
-import os
+from pygame import freetype
 
-from PycePlus.CORE.tools import network
-from PycePlus.UI import Application
+try:
+    from PycePlus.CORE.tools import network
+except Exception:
+    network = None
+
 from PycePlus.UI.tools.color import Color, colorType
 
-VALID_EXT = ('.ttf', '.otf', '.ttc')
-
-
-def _safe_filename(name: str) -> str:
-    try:
-        return "".join(c for c in name if c.isalnum() or c in ('_', '-')).strip() or "font"
-    except Exception:
-        return "font"
-
-
-def _extract_font_name(data: bytes) -> str:
-    try:
-        font = TTFont(BytesIO(data))
-    except Exception:
-        return "unknown_font"
-
-    name = None
-
-    try:
-        for record in font['name'].names:
-            try:
-                if record.nameID == 4:
-                    try:
-                        name = record.toUnicode()
-                    except Exception:
-                        try:
-                            name = record.string.decode(errors='ignore')
-                        except Exception:
-                            name = None
-                    if name:
-                        break
-            except Exception:
-                continue
-    except Exception:
-        pass
-    finally:
-        try:
-            font.close()
-        except Exception:
-            pass
-
-    try:
-        return _safe_filename(name) if name else "unknown_font"
-    except Exception:
-        return "unknown_font"
-
-
-def _pick_font_from_zip(data: bytes) -> tuple[str, bytes] | None:
-    try:
-        with ZipFile(BytesIO(data)) as z:
-            candidates = []
-
-            try:
-                for info in z.infolist():
-                    try:
-                        if info.is_dir():
-                            continue
-                        ext = Path(info.filename).suffix.lower()
-                        if ext in VALID_EXT:
-                            candidates.append(info)
-                    except Exception:
-                        continue
-            except Exception:
-                pass
-
-            if not candidates:
-                return None
-
-            try:
-                candidates.sort(key=lambda x: Path(x.filename).suffix.lower() == '.ttc')
-            except Exception:
-                pass
-
-            try:
-                chosen = candidates[0]
-                return Path(chosen.filename).suffix.lower(), z.read(chosen.filename)
-            except Exception:
-                return None
-    except Exception:
-        return None
-
-
-def _normalize(name: str) -> str:
-    try:
-        return name.lower().replace(' ', '').replace('-', '')
-    except Exception:
-        return ""
-
-
-def _scan_fonts_dirs() -> list[Path]:
-    paths = []
-
-    try:
-        local = Path(Application.root) / 'data' / 'fonts'
-        local.mkdir(parents=True, exist_ok=True)
-        paths.append(local)
-    except Exception:
-        pass
-
-    try:
-        if sys.platform == "win32":
-            paths.append(Path(os.environ.get("WINDIR", "C:/Windows")) / "Fonts")
-        elif sys.platform == "darwin":
-            paths += [
-                Path("/System/Library/Fonts"),
-                Path("/Library/Fonts"),
-                Path.home() / "Library/Fonts"
-            ]
-        else:
-            paths += [
-                Path("/usr/share/fonts"),
-                Path("/usr/local/share/fonts"),
-                Path.home() / ".fonts"
-            ]
-    except Exception:
-        pass
-
-    return paths
-
-
-def _find_font_by_name(name: str) -> Path | None:
-    try:
-        target = _normalize(name)
-        if not target:
-            return None
-
-        for base in _scan_fonts_dirs():
-            try:
-                if not base.exists():
-                    continue
-            except Exception:
-                continue
-
-            try:
-                for path in base.rglob('*'):
-                    try:
-                        if path.suffix.lower() not in VALID_EXT:
-                            continue
-
-                        norm = _normalize(path.stem)
-                        if target == norm or target in norm:
-                            return path
-                    except Exception:
-                        continue
-            except Exception:
-                continue
-    except Exception:
-        return None
-
-    return None
-
-
-def get_font(path: str | Path | list[str]) -> Path:
-    try:
-        folder = Path(Application.root) / 'data' / 'fonts'
-        folder.mkdir(parents=True, exist_ok=True)
-    except Exception:
-        folder = Path.cwd()
-
-    try:
-        if isinstance(path, (list, tuple)):
-            last_error = None
-            for p in path:
-                try:
-                    return get_font(p)
-                except Exception as e:
-                    last_error = e
-            raise FileNotFoundError(f"No se encontró ninguna fuente en {path}") from last_error
-    except Exception as e:
-        raise e
-
-    try:
-        path = str(path).strip()
-    except Exception:
-        raise FileNotFoundError("Ruta de fuente inválida")
-
-    try:
-        if path.startswith(('http://', 'https://')):
-            try:
-                obj = network.download(path)
-                res = obj.get(True)
-            except Exception:
-                raise RuntimeError("Error descargando fuente")
-
-            try:
-                data = res.data
-            except Exception:
-                raise RuntimeError("Respuesta inválida al descargar fuente")
-
-            try:
-                if is_zipfile(BytesIO(data)):
-                    result = _pick_font_from_zip(data)
-                    if not result:
-                        raise ValueError("ZIP sin fuentes válidas")
-
-                    ext, font_data = result
-                    name = _extract_font_name(font_data)
-                    file_path = folder / f"{name}{ext}"
-
-                    try:
-                        if not file_path.exists():
-                            file_path.write_bytes(font_data)
-                    except Exception:
-                        pass
-
-                    return file_path
-            except Exception:
-                pass
-
-            try:
-                ext = Path(path).suffix.lower() or '.ttf'
-            except Exception:
-                ext = '.ttf'
-
-            try:
-                name = _extract_font_name(data)
-            except Exception:
-                name = "unknown_font"
-
-            file_path = folder / f"{name}{ext}"
-
-            try:
-                if not file_path.exists():
-                    file_path.write_bytes(data)
-            except Exception:
-                pass
-
-            return file_path
-    except Exception:
-        pass
-
-    try:
-        p = Path(path)
-        if p.exists():
-            return p
-    except Exception:
-        pass
-
-    try:
-        found = _find_font_by_name(path)
-        if found:
-            return found
-    except Exception:
-        pass
-
-    raise FileNotFoundError(f"No se encontró la fuente: {path}")
-
-
-class FontType1:
-    def __init__(self, family: str, size: int, antialias: bool):
-        self.family = family
-        self.size = size
-        self.antialias = antialias
-
-        try:
-            font_path = get_font(family)
-            self._ofont = pygame.font.Font(str(font_path), size)
-        except Exception:
-            self._ofont = pygame.font.Font(None, size)
-
-    @property
-    def font(self):
-        return self._ofont
-
-
-class FontType2:
-    def __init__(self, family: str, size: int, antialias: bool):
-        self.family = family
-        self.size = size
-        self.antialias = antialias
-
-        try:
-            font_path = get_font(family)
-            self._ofont = pygame.freetype.Font(str(font_path), size)
-        except Exception:
-            self._ofont = pygame.freetype.SysFont(None, size)
-
-    @property
-    def font(self):
-        return self._ofont
+FontLike = str | Path | list[str] | None
 
 
 class Font:
-    def __init__(self, family, size: int = 16, antialias: bool = True, freetype: bool = True):
-        self._family = family
-        self._size = size
-        self._antialias = antialias
-        self._freetype = freetype
+    """Thin font wrapper compatible with the original API."""
 
-        self._bold = False
-        self._italic = False
-        self._underline = False
+    def __init__(
+        self,
+        family: FontLike = None,
+        size: int = 16,
+        antialias: bool = True,
+        freetype: bool = True,
+    ):
+        self.family = family
+        self.size_px = int(size)
+        self.antialias = antialias
+        self.use_freetype = bool(freetype)
+        self._font = self._load_font(family, self.size_px, self.use_freetype)
 
-        self._font = None
-        self._build()
+    def _load_font(self, family: FontLike, size: int, use_freetype: bool):
+        path = None
+        if isinstance(family, (str, Path)) and str(family):
+            p = Path(str(family))
+            if p.exists():
+                path = str(p)
+        elif isinstance(family, (list, tuple)) and family:
+            for item in family:
+                p = Path(str(item))
+                if p.exists():
+                    path = str(p)
+                    break
 
-    def _resolve_family(self, family):
-        if isinstance(family, Font):
-            return family.get_font_family()
-        return family
-
-    def _build(self):
-        try:
-            fam = self._resolve_family(self._family)
-
-            if self._freetype:
-                self._font = FontType2(fam, self._size, self._antialias).font
-                try:
-                    self._font.strong = self._bold
-                    self._font.oblique = self._italic
-                    self._font.underline = self._underline
-                except Exception:
-                    pass
-            else:
-                self._font = FontType1(fam, self._size, self._antialias).font
-                try:
-                    self._font.set_bold(self._bold)
-                    self._font.set_italic(self._italic)
-                    self._font.set_underline(self._underline)
-                except Exception:
-                    pass
-        except Exception:
+        if use_freetype:
             try:
-                if self._freetype:
-                    self._font = pygame.freetype.SysFont(None, self._size)
-                else:
-                    self._font = pygame.font.Font(None, self._size)
+                if path:
+                    return freetype.Font(path, size)
+                if family and not isinstance(family, (list, tuple)):
+                    return freetype.SysFont(str(family), size)
+                return freetype.SysFont(None, size)
             except Exception:
-                self._font = None
+                pass
 
-    def set_bold(self, value: bool):
-        self._bold = bool(value)
         try:
-            if self._freetype:
-                self._font.strong = self._bold
-            else:
-                self._font.set_bold(self._bold)
+            if path:
+                return pygame.font.Font(path, size)
+            if family and not isinstance(family, (list, tuple)):
+                return pygame.font.SysFont(str(family), size)
+            return pygame.font.SysFont(None, size)
         except Exception:
-            pass
+            return pygame.font.Font(None, size)
 
-    def set_italic(self, value: bool):
-        self._italic = bool(value)
+    def resize(self, size: int) -> "Font":
+        self.size_px = int(size)
+        self._font = self._load_font(self.family, self.size_px, self.use_freetype)
+        return self
+
+    def render(self, text: str, color: colorType = (255, 255, 255)) -> pygame.Surface | None:
+        c = Color.makefrom(color).tuple_RGB()
         try:
-            if self._freetype:
-                self._font.oblique = self._italic
-            else:
-                self._font.set_italic(self._italic)
+            if isinstance(self._font, freetype.Font):
+                surf, _ = self._font.render(text, fgcolor=c, bgcolor=None)
+                return surf
+            return self._font.render(text, self.antialias, c)
         except Exception:
-            pass
+            return None
 
-    def set_underline(self, value: bool):
-        self._underline = bool(value)
+    def size(self, text: str) -> tuple[int, int]:
         try:
-            if self._freetype:
-                self._font.underline = self._underline
-            else:
-                self._font.set_underline(self._underline)
-        except Exception:
-            pass
-
-    def get_underline(self) -> bool:
-        return self._underline
-
-    def get_font_size(self) -> int:
-        return self._size
-
-    def get_font_family(self):
-        return self._family
-
-    def update(self, family=None, size=None, antialias=None):
-        try:
-            if family is not None:
-                self._family = family
-            if size is not None:
-                self._size = int(size)
-            if antialias is not None:
-                self._antialias = bool(antialias)
-            self._build()
-        except Exception:
-            pass
-
-    def size(self, text):
-        try:
-            if isinstance(text, (list, tuple)):
-                return [self.size(t) for t in text]
-
-            text = str(text)
-
-            if self._freetype:
-                rect = self._font.get_rect(text)
-                return rect.width, rect.height
-            else:
-                return self._font.size(text)
+            return self._font.get_rect(text).size if isinstance(self._font, freetype.Font) else self._font.size(text)
         except Exception:
             return (0, 0)
 
-    def render(self, text: str, color: colorType):
-            
-        color = Color.makefrom(color)
-        text = str(text)
+    def get_height(self) -> int:
         try:
-            if self._freetype:
-                surf, _ = self._font.render(text, fgcolor=color, antialias=self._antialias)
-                return surf
-            else:
-                return self._font.render(
-                    str(text),
-                    self._antialias,
-                    color
-                )
+            return self._font.get_sized_height() if isinstance(self._font, freetype.Font) else self._font.get_height()
         except Exception:
-            try:
-                return pygame.Surface((1, 1), pygame.SRCALPHA)
-            except Exception:
-                return None
-            
-            
-from typing import TypeAlias
+            return self.size_px
 
-FontLike: TypeAlias = Font | str | tuple[str, ...] | list[str]
+    def get_ascent(self) -> int:
+        try:
+            return self._font.get_sized_ascender() if isinstance(self._font, freetype.Font) else self._font.get_ascent()
+        except Exception:
+            return self.size_px
+
+    def get_descent(self) -> int:
+        try:
+            return self._font.get_sized_descender() if isinstance(self._font, freetype.Font) else self._font.get_descent()
+        except Exception:
+            return 0
+
+
+def get_font(path: str | Path | list[str]) -> Path:
+    if isinstance(path, (list, tuple)):
+        for item in path:
+            try:
+                return get_font(item)
+            except Exception:
+                continue
+        raise FileNotFoundError("No font found in list")
+
+    path = Path(str(path))
+    if path.exists():
+        return path
+
+    if network and str(path).startswith(("http://", "https://")):
+        result = network.download(str(path))
+        if hasattr(result, "get"):
+            result = result.get(True)
+        data = getattr(result, "data", None)
+        if data:
+            folder = Path(__file__).resolve().parent.parent.parent / "data" / "fonts"
+            folder.mkdir(parents=True, exist_ok=True)
+            out = folder / (path.stem or "font.ttf")
+            out.write_bytes(data)
+            return out
+
+    raise FileNotFoundError(str(path))
