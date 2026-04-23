@@ -14,7 +14,7 @@ from PycePlus.GUI.base import Base
 from PycePlus.GUI.interface_man.style import compile_style
 from PycePlus.UI.tools.color import Color, colorType
 from PycePlus.UI.tools.font import Font
-
+from PycePlus.UI.tools import image as MImage
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Helpers
@@ -22,53 +22,6 @@ from PycePlus.UI.tools.font import Font
 
 def _rect(x: int = 0, y: int = 0, width: int = 1, height: int = 1) -> pygame.Rect:
     return pygame.Rect(int(x), int(y), max(int(width), 1), max(int(height), 1))
-
-
-# ──────────────────────────────────────────────────────────────────────────────
-# Image LRU cache
-# ──────────────────────────────────────────────────────────────────────────────
-
-class _ImageCache:
-    _MAX = 128
-    _lock = threading.RLock()
-    _store: dict[str, pygame.Surface] = {}
-    _order: list[str] = []
-
-    @classmethod
-    def load(cls, path: str) -> pygame.Surface:
-        with cls._lock:
-            if path in cls._store:
-                if path in cls._order:
-                    cls._order.remove(path)
-                cls._order.append(path)
-                return cls._store[path]
-
-        surf = pygame.image.load(path).convert_alpha()
-
-        with cls._lock:
-            cls._store[path] = surf
-            if path in cls._order:
-                cls._order.remove(path)
-            cls._order.append(path)
-            if len(cls._order) > cls._MAX:
-                oldest = cls._order.pop(0)
-                cls._store.pop(oldest, None)
-
-        return surf
-
-    @classmethod
-    def invalidate(cls, path: str | None = None) -> None:
-        with cls._lock:
-            if path:
-                cls._store.pop(path, None)
-                if path in cls._order:
-                    cls._order.remove(path)
-            else:
-                cls._store.clear()
-                cls._order.clear()
-
-
-_img_cache = _ImageCache()
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -423,8 +376,8 @@ class Image(Base):
         self,
         father=None,
         source: str | pygame.Surface | None = None,
-        width: int = 0,
-        height: int = 0,
+        width: int | None = None,
+        height: int | None= None,
         keep_ratio: bool = True,
         style: dict | None = None,
         x: int = 0,
@@ -432,6 +385,8 @@ class Image(Base):
         name: str | None = None,
         page: str | None = None,
         visible: bool = True,
+        flips: tuple[bool, bool] = (False, False),
+        convert: bool = False,
     ):
         _default = {
             "background_color": (0, 0, 0, 0),
@@ -439,9 +394,9 @@ class Image(Base):
         _style = {**_default, **(style or {})}
         _style.setdefault("x", x)
         _style.setdefault("y", y)
-        if width > 0:
+        if width and width > 0:
             _style.setdefault("width", width)
-        if height > 0:
+        if height and height > 0:
             _style.setdefault("height", height)
 
         super().__init__(father, name, page, style=_style)
@@ -453,7 +408,7 @@ class Image(Base):
         self.visible = visible
         self._path: str | None = None
 
-        self._load_source(source)
+        self._load_source(source, (width, height), flips, convert)
 
         nat_w = self._orig.get_width() if self._orig else 0
         nat_h = self._orig.get_height() if self._orig else 0
@@ -465,19 +420,21 @@ class Image(Base):
         self.texture = pygame.Surface((self.rect.width, self.rect.height), pygame.SRCALPHA)
         self.mark_dirty()
 
-    def _load_source(self, source) -> None:
+    def _load_source(self, source, size: tuple[int | None, int | None], flips: tuple[bool, bool], convert:bool) -> None:
         self._scaled = None
+        self._orig = None
+        self._path = None
+
         if source is None:
-            self._orig = None
-        elif isinstance(source, str):
-            self._path = source
-            try:
-                self._orig = _img_cache.load(source)
-            except Exception:
-                self._orig = None
-        elif isinstance(source, pygame.Surface):
-            self._orig = source
-        else:
+            return
+
+        try:
+            if isinstance(source, str):
+                self._path = source
+
+            self._orig = MImage.load(source, size, flips, convert)
+
+        except Exception:
             self._orig = None
 
     def set_source(self, source: str | pygame.Surface) -> None:

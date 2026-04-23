@@ -57,6 +57,7 @@ def update() -> None:
             # Only root-level widgets are blitted directly; children are composited into their parent.
             if widget.is_father_widget():
                 continue
+            
 
             _render_widget(widget)
             _collect(widget, flat)

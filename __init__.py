@@ -40,6 +40,7 @@ Application.tasker = tasker
 from PycePlus.CORE.host import HostClient, HostServer
 from PycePlus.CORE.tools import asynchronous
 from PycePlus.CORE.tools import network
+from PycePlus.GUI.widgets.extras import *
 
 __version__ = "3.0.0"
 
